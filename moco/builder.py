@@ -69,7 +69,7 @@ class MoCo(nn.Module):
 
         # replace the keys at ptr (dequeue and enqueue)
         self.queue[:, ptr:ptr + batch_size] = k.T
-        self.queue2[: ptr:ptr + batch_size] = k2.T
+        self.queue2[:, ptr:ptr + batch_size] = k2.T
         ptr = (ptr + batch_size) % self.K  # move pointer
 
         self.queue_ptr[0] = ptr
@@ -183,7 +183,7 @@ class MoCo(nn.Module):
 
         # dequeue and enqueue
         self._dequeue_and_enqueue(k, k2)
-        if self.queue_ptr.equals(0):
+        if (self.queue_ptr == 0).all():
             with torch.no_grad():
                 self._rotate()
 
