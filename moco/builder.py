@@ -25,19 +25,26 @@ class MoCo(nn.Module):
         # num_classes is the output fc dimension
         self.encoder_q = base_encoder(num_classes=dim)
         self.encoder_k = base_encoder(num_classes=dim)
+        self.encoder_k2 = base_encoder(num_classes=dim)
 
         if mlp:  # hack: brute-force replacement
             dim_mlp = self.encoder_q.fc.weight.shape[1]
             self.encoder_q.fc = nn.Sequential(nn.Linear(dim_mlp, dim_mlp), nn.ReLU(), self.encoder_q.fc)
             self.encoder_k.fc = nn.Sequential(nn.Linear(dim_mlp, dim_mlp), nn.ReLU(), self.encoder_k.fc)
+            self.encoder_k2.fc = nn.Sequential(nn.Linear(dim_mlp, dim_mlp), nn.ReLU(), self.encoder_k2.fc)
 
-        for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
+        for param_q, param_k, param_k2 in zip(
+                self.encoder_q.parameters(), self.encoder_k.parameters(), self.encoder_k2.parameters()):
             param_k.data.copy_(param_q.data)  # initialize
             param_k.requires_grad = False  # not update by gradient
+            param_k2.data.copy_(param_q.data)  # initialize
+            param_k2.requires_grad = False  # not update by gradient
 
         # create the queue
         self.register_buffer("queue", torch.randn(dim, K))
         self.queue = nn.functional.normalize(self.queue, dim=0)
+        self.register_buffer("queue2", torch.randn(dim, K))
+        self.queue2 = nn.functional.normalize(self.queue2, dim=0)
 
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
 
@@ -50,17 +57,19 @@ class MoCo(nn.Module):
             param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
 
     @torch.no_grad()
-    def _dequeue_and_enqueue(self, keys):
+    def _dequeue_and_enqueue(self, k, k2):
         # gather keys before updating queue
-        keys = concat_all_gather(keys)
+        k = concat_all_gather(k)
+        k2 = concat_all_gather(k2)
 
-        batch_size = keys.shape[0]
+        batch_size = k.shape[0]
 
         ptr = int(self.queue_ptr)
         assert self.K % batch_size == 0  # for simplicity
 
         # replace the keys at ptr (dequeue and enqueue)
-        self.queue[:, ptr:ptr + batch_size] = keys.T
+        self.queue[:, ptr:ptr + batch_size] = k.T
+        self.queue2[: ptr:ptr + batch_size] = k2.T
         ptr = (ptr + batch_size) % self.K  # move pointer
 
         self.queue_ptr[0] = ptr
@@ -112,6 +121,18 @@ class MoCo(nn.Module):
 
         return x_gather[idx_this]
 
+    @torch.no_grad()
+    def _rotate(self):
+        # k <- k2
+        for param_k2, param_k in zip(self.encoder_k2.parameters(), self.encoder_k.parameters()):
+            param_k.data = param_k2.data
+        self.queue.data = self.queue2.data
+
+        # q <- k2
+        for param_k2, param_q in zip(self.encoder_k2.parameters(), self.encoder_q.parameters()):
+            param_k2.data = param_q.data
+        # self.queue2 will proceed to be overwritten
+
     def forward(self, im_q, im_k):
         """
         Input:
@@ -127,7 +148,7 @@ class MoCo(nn.Module):
 
         # compute key features
         with torch.no_grad():  # no gradient to keys
-            self._momentum_update_key_encoder()  # update the key encoder
+            # self._momentum_update_key_encoder()  # update the key encoder
 
             # shuffle for making use of BN
             im_k, idx_unshuffle = self._batch_shuffle_ddp(im_k)
@@ -137,6 +158,12 @@ class MoCo(nn.Module):
 
             # undo shuffle
             k = self._batch_unshuffle_ddp(k, idx_unshuffle)
+
+            k2 = self.encoder_k2(im_k)  # keys: NxC
+            k2 = nn.functional.normalize(k2, dim=1)
+
+            # undo shuffle
+            k2 = self._batch_unshuffle_ddp(k2, idx_unshuffle)
 
         # compute logits
         # Einstein sum is more intuitive
@@ -155,7 +182,10 @@ class MoCo(nn.Module):
         labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
 
         # dequeue and enqueue
-        self._dequeue_and_enqueue(k)
+        self._dequeue_and_enqueue(k, k2)
+        if self.queue_ptr.equals(0):
+            with torch.no_grad():
+                self._rotate()
 
         return logits, labels
 
