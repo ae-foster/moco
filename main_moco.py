@@ -195,7 +195,7 @@ def main_worker(gpu, ngpus_per_node, args):
     optimizer = torch.optim.SGD(model.module.encoder_q.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
-    optimizer_queue = torch.optim.SGD([model.module.queue], args.lr * 10,
+    optimizer_queue = torch.optim.SGD([model.module.queue], args.lr * 200,
                                       momentum=args.momentum,
                                       weight_decay=args.weight_decay)
 
@@ -303,6 +303,7 @@ def train(train_loader, model, criterion, optimizer, optimizer_queue, epoch, arg
 
         # compute output
         output, target, nll = model(im_q=images[0], im_k=images[1])
+        nll = nll.mean()
         loss = criterion(output, target)
 
         # acc1/acc5 are (K+1)-way contrast classifier accuracy
@@ -310,7 +311,7 @@ def train(train_loader, model, criterion, optimizer, optimizer_queue, epoch, arg
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
         losses.update(loss.item(), images[0].size(0))
         top1.update(acc1[0], images[0].size(0))
-        nlles.update(nll, images[0].size(0))
+        nlles.update(nll.item(), images[0].size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -318,7 +319,6 @@ def train(train_loader, model, criterion, optimizer, optimizer_queue, epoch, arg
         optimizer.step()
 
         optimizer_queue.zero_grad()
-        nll = nll.mean()
         nll.backward()
         optimizer_queue.step()
 
