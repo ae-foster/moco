@@ -192,10 +192,10 @@ def main_worker(gpu, ngpus_per_node, args):
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda(args.gpu)
 
-    optimizer = torch.optim.SGD(model.encoder_q.parameters(), args.lr,
+    optimizer = torch.optim.SGD(model.module.encoder_q.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
-    optimizer_queue = torch.optim.SGD(model.queue.parameters(), args.lr,
+    optimizer_queue = torch.optim.SGD([model.module.queue], args.lr * 10,
                                       momentum=args.momentum,
                                       weight_decay=args.weight_decay)
 
@@ -283,10 +283,10 @@ def train(train_loader, model, criterion, optimizer, optimizer_queue, epoch, arg
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
-    top5 = AverageMeter('Acc@5', ':6.2f')
+    nll = AverageMeter('NLL', ':.4e')
     progress = ProgressMeter(
         len(train_loader),
-        [batch_time, data_time, losses, top1, top5],
+        [batch_time, data_time, losses, top1, nll],
         prefix="Epoch: [{}]".format(epoch))
 
     # switch to train mode
@@ -310,11 +310,11 @@ def train(train_loader, model, criterion, optimizer, optimizer_queue, epoch, arg
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
         losses.update(loss.item(), images[0].size(0))
         top1.update(acc1[0], images[0].size(0))
-        top5.update(acc5[0], images[0].size(0))
+        nll.update(nll, images[0].size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
-        loss.backward()
+        loss.backward(retain_graph=True)
         optimizer.step()
 
         optimizer_queue.zero_grad()
