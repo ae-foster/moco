@@ -109,15 +109,15 @@ class MoCo(nn.Module):
         # positive logits: NxN
         l_pos = torch.einsum('nc,mc->nm', [q, k.detach()])
         # negative logits: NxK
-        l_neg = torch.einsum('nc,ck->nk', [q, queue])
-        # additional negative logits: NxK
-        l_additional = torch.einsum('nc,ck->nk', [k, queue])
+        l_neg = torch.einsum('nc,ck->nk', [q, queue.detach()])
+        # detached logits: 2NxK
+        l_detach = torch.einsum('nc,ck->nk', [torch.cat([k, q], dim=0).detach(), queue])
 
         # logits: Nx(N+K)
         logits = torch.cat([l_pos, l_neg], dim=1)
 
         # nll: scalar
-        nll = -torch.cat([l_neg, l_additional], dim=1).logsumexp(1)
+        nll = -l_detach.logsumexp(1)
 
         # apply temperature
         logits /= self.T
