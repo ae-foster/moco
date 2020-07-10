@@ -3,16 +3,6 @@ import torch
 import torch.nn as nn
 
 
-class LearnedQueue(nn.Module):
-    def __init__(self, dim=128, K=8196):
-        super(LearnedQueue, self).__init__()
-
-        # create the queue
-        self._queue = nn.Parameter(torch.randn(dim, K))
-
-    def forward(self):
-        return nn.functional.normalize(self._queue, dim=0)
-
 class MoCo(nn.Module):
     """
     Build a MoCo model with: a query encoder, a key encoder, and a queue
@@ -37,6 +27,8 @@ class MoCo(nn.Module):
         if mlp:  # hack: brute-force replacement
             dim_mlp = self.encoder_q.fc.weight.shape[1]
             self.encoder_q.fc = nn.Sequential(nn.Linear(dim_mlp, dim_mlp), nn.ReLU(), self.encoder_q.fc)
+
+        self.queue = nn.Parameter(torch.randn(dim, K))
 
     @torch.no_grad()
     def _batch_shuffle_ddp(self, x):
@@ -85,7 +77,7 @@ class MoCo(nn.Module):
 
         return x_gather[idx_this]
 
-    def forward(self, im_q, im_k, queue_obj):
+    def forward(self, im_q, im_k):
         """
         Input:
             im_q: a batch of query images
@@ -110,7 +102,7 @@ class MoCo(nn.Module):
             # undo shuffle
             k = self._batch_unshuffle_ddp(k, idx_unshuffle)
 
-        queue = queue_obj().clone().detach()
+        queue = nn.functional.normalize(self.queue, dim=0)
 
         # compute logits
         # Einstein sum is more intuitive
