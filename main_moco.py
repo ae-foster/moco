@@ -271,7 +271,7 @@ def main_worker(gpu, ngpus_per_node, args):
         adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, optimizer_queue, epoch, args)
+        train(train_loader, model, queue, criterion, optimizer, optimizer_queue, epoch, args)
 
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                 and args.rank % ngpus_per_node == 0):
@@ -323,6 +323,7 @@ def train(train_loader, model, queue, criterion, optimizer, optimizer_queue, epo
         optimizer.step()
 
         optimizer_queue.zero_grad()
+        nll = nll.mean()
         nll.backward()
         optimizer_queue.step()
 

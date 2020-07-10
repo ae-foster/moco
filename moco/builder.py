@@ -3,13 +3,15 @@ import torch
 import torch.nn as nn
 
 
-class LearnedQueue(nn..Module):
+class LearnedQueue(nn.Module):
     def __init__(self, dim=128, K=8196):
         super(LearnedQueue, self).__init__()
 
         # create the queue
-        self.register_buffer("queue", torch.randn(dim, K))
+        self._queue = nn.Parameter(torch.randn(dim, K))
 
+    def forward(self):
+        return nn.functional.normalize(self._queue, dim=0)
 
 class MoCo(nn.Module):
     """
@@ -95,7 +97,6 @@ class MoCo(nn.Module):
         # compute query features
         q = self.encoder_q(im_q)  # queries: NxC
         q = nn.functional.normalize(q, dim=1)
-        queue_obj.queue = nn.functional.normalize(queue_obj.queue, dim=0)
 
         # compute key features
         with torch.no_grad():  # no gradient to keys
@@ -103,26 +104,28 @@ class MoCo(nn.Module):
             # shuffle for making use of BN
             im_k, idx_unshuffle = self._batch_shuffle_ddp(im_k)
 
-            k = self.encoder_k(im_k)  # keys: NxC
+            k = self.encoder_q(im_k)  # keys: NxC
             k = nn.functional.normalize(k, dim=1)
 
             # undo shuffle
             k = self._batch_unshuffle_ddp(k, idx_unshuffle)
+
+        queue = queue_obj().clone().detach()
 
         # compute logits
         # Einstein sum is more intuitive
         # positive logits: Nx1
         l_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1)
         # negative logits: NxK
-        l_neg = torch.einsum('nc,ck->nk', [q, queue_obj.queue.clone().detach()])
+        l_neg = torch.einsum('nc,ck->nk', [q, queue])
         # additional negative logits: NxK
-        l_additional = torch.einsum('nc,ck->nk', [k, queue_obj.queue.clone().detach()])
+        l_additional = torch.einsum('nc,ck->nk', [k, queue])
 
         # logits: Nx(1+K)
         logits = torch.cat([l_pos, l_neg], dim=1)
 
         # nll: scalar
-        nll = -torch.cat([l_neg, l_additional], dim=1).logsumexp(1).mean()
+        nll = -torch.cat([l_neg, l_additional], dim=1).logsumexp(1)
 
         # apply temperature
         logits /= self.T
