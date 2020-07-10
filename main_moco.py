@@ -160,6 +160,7 @@ def main_worker(gpu, ngpus_per_node, args):
         models.__dict__[args.arch],
         args.moco_dim, args.moco_k, args.moco_m, args.moco_t, args.mlp)
     print(model)
+    queue = moco.builder.LearnedQueue(args.moco_dim, args.moco_k)
 
     if args.distributed:
         # For multiprocessing distributed, DistributedDataParallel constructor
@@ -168,20 +169,24 @@ def main_worker(gpu, ngpus_per_node, args):
         if args.gpu is not None:
             torch.cuda.set_device(args.gpu)
             model.cuda(args.gpu)
+            queue.cuda(args.gpu)
             # When using a single GPU per process and per
             # DistributedDataParallel, we need to divide the batch size
             # ourselves based on the total number of GPUs we have
             args.batch_size = int(args.batch_size / ngpus_per_node)
             args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
             model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+            queue = torch.nn.parallel.DistributedDataParallel(queue, device_ids=[args.gpu])
         else:
             model.cuda()
+            queue.cuda()
             # DistributedDataParallel will divide and allocate batch_size to all
             # available GPUs if device_ids are not set
             model = torch.nn.parallel.DistributedDataParallel(model)
+            queue = torch.nn.parallel.DistributedDataParallel(queue)
     elif args.gpu is not None:
         torch.cuda.set_device(args.gpu)
-        model = model.cuda(args.gpu)
+        # model = model.cuda(args.gpu)
         # comment out the following line for debugging
         raise NotImplementedError("Only DistributedDataParallel is supported.")
     else:
@@ -195,6 +200,9 @@ def main_worker(gpu, ngpus_per_node, args):
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
+    optimizer_queue = torch.optim.SGD(queue.parameters(), args.lr,
+                                      momentum=args.momentum,
+                                      weight_decay=args.weight_decay)
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -263,7 +271,7 @@ def main_worker(gpu, ngpus_per_node, args):
         adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args)
+        train(train_loader, model, criterion, optimizer, optimizer_queue, epoch, args)
 
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                 and args.rank % ngpus_per_node == 0):
@@ -275,7 +283,7 @@ def main_worker(gpu, ngpus_per_node, args):
             }, is_best=False, filename='checkpoint_{:04d}.pth.tar'.format(epoch))
 
 
-def train(train_loader, model, criterion, optimizer, epoch, args):
+def train(train_loader, model, queue, criterion, optimizer, optimizer_queue, epoch, args):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
@@ -299,7 +307,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
             images[1] = images[1].cuda(args.gpu, non_blocking=True)
 
         # compute output
-        output, target = model(im_q=images[0], im_k=images[1])
+        output, target, nll = model(im_q=images[0], im_k=images[1], queue_obj=queue)
         loss = criterion(output, target)
 
         # acc1/acc5 are (K+1)-way contrast classifier accuracy
@@ -313,6 +321,10 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
+        optimizer_queue.zero_grad()
+        nll.backward()
+        optimizer_queue.step()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
