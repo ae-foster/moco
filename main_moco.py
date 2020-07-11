@@ -195,7 +195,7 @@ def main_worker(gpu, ngpus_per_node, args):
     optimizer = torch.optim.SGD(model.module.encoder_q.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
-    optimizer_queue = torch.optim.SGD([model.module.queue], args.lr * 200,
+    optimizer_queue = torch.optim.SGD([model.module.queue], args.lr,
                                       momentum=args.momentum,
                                       weight_decay=args.weight_decay)
 
@@ -260,10 +260,19 @@ def main_worker(gpu, ngpus_per_node, args):
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True)
 
+    # Density model initialization
+    if args.distributed:
+        train_sampler.set_epoch(0)
+    adjust_learning_rate(optimizer, 0, args)
+    adjust_learning_rate(optimizer_queue, 0, args)
+
+    initialize(train_loader, model, args)
+
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         adjust_learning_rate(optimizer, epoch, args)
+        adjust_learning_rate(optimizer_queue, epoch, args)
 
         # train for one epoch
         train(train_loader, model, criterion, optimizer, optimizer_queue, epoch, args)
@@ -278,15 +287,41 @@ def main_worker(gpu, ngpus_per_node, args):
             }, is_best=False, filename='checkpoint_{:04d}.pth.tar'.format(epoch))
 
 
+def initialize(train_loader, model, args):
+    batch_time = AverageMeter('Time', ':6.3f')
+    progress = ProgressMeter(
+        len(train_loader),
+        [batch_time],
+        prefix="Epoch: [i]")
+
+    # switch to train mode
+    model.train()
+
+    end = time.time()
+    for i, (images, _) in enumerate(train_loader):
+
+        if args.gpu is not None:
+            images[0] = images[0].cuda(args.gpu, non_blocking=True)
+
+        # compute output
+        model.init(im=images[0])
+
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+        if i % args.print_freq == 0:
+            progress.display(i)
+
+
 def train(train_loader, model, criterion, optimizer, optimizer_queue, epoch, args):
     batch_time = AverageMeter('Time', ':6.3f')
-    data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
     nlles = AverageMeter('NLL', ':.4e')
     progress = ProgressMeter(
         len(train_loader),
-        [batch_time, data_time, losses, top1, nlles],
+        [batch_time, losses, top1, nlles],
         prefix="Epoch: [{}]".format(epoch))
 
     # switch to train mode
@@ -294,8 +329,6 @@ def train(train_loader, model, criterion, optimizer, optimizer_queue, epoch, arg
 
     end = time.time()
     for i, (images, _) in enumerate(train_loader):
-        # measure data loading time
-        data_time.update(time.time() - end)
 
         if args.gpu is not None:
             images[0] = images[0].cuda(args.gpu, non_blocking=True)

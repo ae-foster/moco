@@ -106,14 +106,14 @@ class MoCo(nn.Module):
 
         # compute logits
         # Einstein sum is more intuitive
-        # positive logits: NxN
-        l_pos = torch.einsum('nc,mc->nm', [q, k.detach()])
+        # positive logits: Nx1
+        l_pos = torch.einsum('nc,nc->n', [q, k.detach()])
         # negative logits: NxK
         l_neg = torch.einsum('nc,ck->nk', [q, queue.detach()])
         # detached logits: 2NxK
         l_detach = torch.einsum('nc,ck->nk', [torch.cat([k, q], dim=0).detach(), queue])
 
-        # logits: Nx(N+K)
+        # logits: Nx(1+K)
         logits = torch.cat([l_pos, l_neg], dim=1)
 
         # nll: scalar
@@ -123,10 +123,15 @@ class MoCo(nn.Module):
         logits /= self.T
 
         # labels: positive key indicators
-        labels = torch.arange(logits.shape[0], dtype=torch.long).cuda()
+        labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
 
         return logits, labels, nll
 
+    def init(self, im):
+        # compute query features
+        q = self.encoder_q(im)  # queries: NxC
+        q = nn.functional.normalize(q, dim=1)
+        
 
 # utils
 @torch.no_grad()
