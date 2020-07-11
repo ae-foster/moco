@@ -30,6 +30,24 @@ class MoCo(nn.Module):
 
         self.queue = nn.Parameter(torch.randn(dim, K))
 
+        self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
+
+    @torch.no_grad()
+    def _store(self, keys):
+        # gather keys before updating queue
+        keys = concat_all_gather(keys)
+
+        batch_size = keys.shape[0]
+
+        ptr = int(self.queue_ptr)
+        assert self.K % batch_size == 0  # for simplicity
+
+        # replace the keys at ptr (dequeue and enqueue)
+        self.queue.data[:, ptr:ptr + batch_size] = keys.T.data
+        ptr = (ptr + batch_size) % self.K  # move pointer
+
+        self.queue_ptr[0] = ptr
+
     @torch.no_grad()
     def _batch_shuffle_ddp(self, x):
         """
@@ -129,8 +147,14 @@ class MoCo(nn.Module):
 
     def init(self, im):
         # compute query features
-        q = self.encoder_q(im)  # queries: NxC
-        q = nn.functional.normalize(q, dim=1)
+        with torch.no_grad():
+            q = self.encoder_q(im)  # queries: NxC
+            q = nn.functional.normalize(q, dim=1).detach()
+
+        self._store(q)
+
+        if (self.queue_ptr == 0).all():
+            raise StopIteration
         
 
 # utils
