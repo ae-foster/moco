@@ -263,8 +263,6 @@ def main_worker(gpu, ngpus_per_node, args):
     # Density model initialization
     if args.distributed:
         train_sampler.set_epoch(0)
-    adjust_learning_rate(optimizer, 0, args)
-    adjust_learning_rate(optimizer_queue, 0, args)
 
     initialize(train_loader, model, args)
 
@@ -304,7 +302,10 @@ def initialize(train_loader, model, args):
             images[0] = images[0].cuda(args.gpu, non_blocking=True)
 
         # compute output
-        model.init(im=images[0])
+        try:
+            model.module.init(im=images[0])
+        except StopIteration:
+            return
 
         # measure elapsed time
         batch_time.update(time.time() - end)

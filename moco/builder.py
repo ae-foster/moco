@@ -19,6 +19,7 @@ class MoCo(nn.Module):
 
         self.m = m
         self.T = T
+        self.K = K
 
         # create the encoder
         # num_classes is the output fc dimension
@@ -125,7 +126,7 @@ class MoCo(nn.Module):
         # compute logits
         # Einstein sum is more intuitive
         # positive logits: Nx1
-        l_pos = torch.einsum('nc,nc->n', [q, k.detach()])
+        l_pos = torch.einsum('nc,nc->n', [q, k.detach()]).unsqueeze(-1)
         # negative logits: NxK
         l_neg = torch.einsum('nc,ck->nk', [q, queue.detach()])
         # detached logits: 2NxK
