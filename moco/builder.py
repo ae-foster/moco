@@ -31,9 +31,7 @@ class MoCo(nn.Module):
             self.encoder_q.fc = nn.Sequential(nn.Linear(dim_mlp, dim_mlp), nn.ReLU(), self.encoder_q.fc)
             self.encoder_k.fc = nn.Sequential(nn.Linear(dim_mlp, dim_mlp), nn.ReLU(), self.encoder_k.fc)
 
-        for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
-            param_k.data.copy_(param_q.data)  # initialize
-            param_k.requires_grad = False  # not update by gradient
+        self._update_key_encoder()
 
         # create the queue
         self.register_buffer("queue", torch.randn(dim, K))
@@ -51,7 +49,9 @@ class MoCo(nn.Module):
         Momentum update of the key encoder
         """
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
-            param_k.data = param_q.data
+            param_k.data.copy_(param_q.data)  # initialize
+            param_k.requires_grad = False  # not update by gradient
+
 
     @torch.no_grad()
     def _dequeue_and_enqueue(self, keys):
@@ -137,8 +137,10 @@ class MoCo(nn.Module):
             k = self._batch_unshuffle_ddp(k, idx_unshuffle)
 
         if self.flip:
+            #print('flip')
             # dequeue and enqueue
             self._dequeue_and_enqueue(k)
+            #print('k', k)
 
             if (self.queue_ptr == 0).all():
                 # Change mode to flop
@@ -147,9 +149,13 @@ class MoCo(nn.Module):
 
             return
 
+        #print('flop')
+
         # compute query features
         q = self.encoder_q(im_q)  # queries: NxC
         q = nn.functional.normalize(q, dim=1)
+
+        #print('q', q, 'k', k)
 
         # compute logits
         # Einstein sum is more intuitive
