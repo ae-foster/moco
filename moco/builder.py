@@ -8,7 +8,7 @@ class MoCo(nn.Module):
     Build a MoCo model with: a query encoder, a key encoder, and a queue
     https://arxiv.org/abs/1911.05722
     """
-    def __init__(self, base_encoder, dim=128, K=65536, m=0.999, T=0.07, mlp=False):
+    def __init__(self, base_encoder, dim=128, K=65536, m=0.999, T=0.07, mlp=False, flop_steps=512):
         """
         dim: feature dimension (default: 128)
         K: queue size; number of negative keys (default: 65536)
@@ -41,13 +41,17 @@ class MoCo(nn.Module):
 
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
 
+        self.flip = True
+        self.flop_steps = flop_steps
+        self.flop_step = 0
+
     @torch.no_grad()
-    def _momentum_update_key_encoder(self):
+    def _update_key_encoder(self):
         """
         Momentum update of the key encoder
         """
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
-            param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
+            param_k.data = param_q.data
 
     @torch.no_grad()
     def _dequeue_and_enqueue(self, keys):
@@ -121,14 +125,8 @@ class MoCo(nn.Module):
             logits, targets
         """
 
-        # compute query features
-        q = self.encoder_q(im_q)  # queries: NxC
-        q = nn.functional.normalize(q, dim=1)
-
         # compute key features
         with torch.no_grad():  # no gradient to keys
-            self._momentum_update_key_encoder()  # update the key encoder
-
             # shuffle for making use of BN
             im_k, idx_unshuffle = self._batch_shuffle_ddp(im_k)
 
@@ -137,6 +135,20 @@ class MoCo(nn.Module):
 
             # undo shuffle
             k = self._batch_unshuffle_ddp(k, idx_unshuffle)
+
+        if self.flip:
+            # dequeue and enqueue
+            self._dequeue_and_enqueue(k)
+
+            if (self.queue_ptr == 0).all():
+                # Change mode to flop
+                self.flip = False
+
+            return
+
+        # compute query features
+        q = self.encoder_q(im_q)  # queries: NxC
+        q = nn.functional.normalize(q, dim=1)
 
         # compute logits
         # Einstein sum is more intuitive
@@ -154,8 +166,12 @@ class MoCo(nn.Module):
         # labels: positive key indicators
         labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
 
-        # dequeue and enqueue
-        self._dequeue_and_enqueue(k)
+        self.flop_step += 1
+        if self.flop_step >= self.flop_steps:
+            # Change model to flip
+            self.flip = True
+            self._update_key_encoder()
+            return
 
         return logits, labels
 
