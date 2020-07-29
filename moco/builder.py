@@ -8,7 +8,7 @@ class MoCo(nn.Module):
     Build a MoCo model with: a query encoder, a key encoder, and a queue
     https://arxiv.org/abs/1911.05722
     """
-    def __init__(self, base_encoder, dim=128, K=65536, m=0.999, T=0.07, mlp=False, flop_steps=512):
+    def __init__(self, base_encoder, dim=128, K=65536, m=0.999, T=0.07, mlp=False, flop_steps=256):
         """
         dim: feature dimension (default: 128)
         K: queue size; number of negative keys (default: 65536)
@@ -143,6 +143,7 @@ class MoCo(nn.Module):
             if (self.queue_ptr == 0).all():
                 # Change mode to flop
                 self.flip = False
+                self.flop_step = 0
 
             return
 
@@ -171,7 +172,6 @@ class MoCo(nn.Module):
             # Change model to flip
             self.flip = True
             self._update_key_encoder()
-            return
 
         return logits, labels
 
