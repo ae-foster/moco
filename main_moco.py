@@ -413,7 +413,7 @@ def get_dataset(dataset, augmentation, data_dir, train=True):
             data_dir,
             augmentation)
     elif dataset == 'cifar10':
-        datasets.CIFAR10(
+        return datasets.CIFAR10(
             data_dir,
             transform=augmentation,
             train=train)
