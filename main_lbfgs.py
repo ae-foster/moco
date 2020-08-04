@@ -13,14 +13,15 @@ import torch
 import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
-import torch.distributed as dist
 import torch.optim
-import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
+
+from main_moco import get_dataset
+from moco.builder import adapt_architecture
 
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
@@ -45,23 +46,24 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                     help='mini-batch size (default: 256), this is the total '
                          'batch size of all GPUs on the current node when '
                          'using Data Parallel or Distributed Data Parallel')
+parser.add_argument('-d', '--dataset', default='imagenet', type=str,
+                    help='dataset', choices=['imagenet', 'cifar10', 'cifar100'])
 parser.add_argument('--lr', '--learning-rate', default=1., type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
 parser.add_argument('--schedule', default=[60, 80], nargs='*', type=int,
                     help='learning rate schedule (when to drop lr by a ratio)')
-parser.add_argument('--wd', '--weight-decay', default=0., type=float,
-                    metavar='W', help='weight decay (default: 0.)',
+parser.add_argument('--wd', '--weight-decay', default=1e-5, type=float,
+                    metavar='W', help='weight decay (default: 1e-5)',
                     dest='weight_decay')
 parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
 parser.add_argument('--gpu', default=0, type=int,
                     help='GPU id to use.')
 parser.add_argument('--seed', default=None, type=int)
-
 parser.add_argument('--pretrained', default='', type=str,
                     help='path to moco pretrained checkpoint')
 
-# LBFGS specific
+# LBFGS specific: how much of the dataset to use
 parser.add_argument('--length', default=0, type=int,
                     help='length of training set to use')
 parser.add_argument('--percentage', default=0., type=float,
@@ -83,8 +85,8 @@ def main():
                       'You may see unexpected behavior when restarting '
                       'from checkpoints.')
 
-
     main_worker(args.gpu, args)
+
 
 def main_worker(gpu, args):
     global best_acc1
@@ -96,14 +98,17 @@ def main_worker(gpu, args):
     # create model
     print("=> creating model '{}'".format(args.arch))
     model = models.__dict__[args.arch]()
+    model = adapt_architecture(model, args.dataset)
 
     # the fc layer is now identity, returning the representation of that object
-    clf_shape = model.fc.in_features, model.fc.out_features
+    num_class_dict = {'imagenet': 1000, 'cifar10': 10, 'cifar100': 100}
+    num_classes = num_class_dict[args.dataset]
+    representation_shape = model.fc.in_features
     model.fc = nn.Identity()
     # freeze all layers
     for name, param in model.named_parameters():
         param.requires_grad = False
-    clf = nn.Linear(*clf_shape)
+    clf = nn.Linear(representation_shape, num_classes)
 
     # load from pre-trained, before DistributedDataParallel constructor
     if args.pretrained:
@@ -143,32 +148,30 @@ def main_worker(gpu, args):
     cudnn.benchmark = True
 
     # Data loading code
-    traindir = os.path.join(args.data, 'train')
-    valdir = os.path.join(args.data, 'val')
+    crop_size = 224 if args.dataset == 'imagenet' else 32
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        transforms.Compose([
+    train_dataset = get_dataset(args.dataset, transforms.Compose([
             transforms.RandomResizedCrop(224),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             normalize,
-        ]))
+        ]), args.data, train=True)
 
     train_sampler = None
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler)
 
-    val_loader = torch.utils.data.DataLoader(
-        datasets.ImageFolder(valdir, transforms.Compose([
+    val_dataset = get_dataset(args.dataset, transforms.Compose([
             transforms.Resize(256),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             normalize,
-        ])),
+        ]), args.data, train=False)
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 

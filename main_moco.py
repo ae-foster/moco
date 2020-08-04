@@ -48,6 +48,8 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                     help='mini-batch size (default: 256), this is the total '
                          'batch size of all GPUs on the current node when '
                          'using Data Parallel or Distributed Data Parallel')
+parser.add_argument('-d', '--dataset', default='imagenet', type=str,
+                    help='dataset', choices=['imagenet', 'cifar10', 'cifar100'])
 parser.add_argument('--lr', '--learning-rate', default=0.03, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
 parser.add_argument('--schedule', default=[120, 160], nargs='*', type=int,
@@ -158,7 +160,7 @@ def main_worker(gpu, ngpus_per_node, args):
     print("=> creating model '{}'".format(args.arch))
     model = moco.builder.MoCo(
         models.__dict__[args.arch],
-        args.moco_dim, args.moco_k, args.moco_m, args.moco_t, args.mlp)
+        args.moco_dim, args.moco_k, args.moco_m, args.moco_t, args.mlp, dataset=args.dataset)
     print(model)
 
     if args.distributed:
@@ -217,13 +219,13 @@ def main_worker(gpu, ngpus_per_node, args):
     cudnn.benchmark = True
 
     # Data loading code
-    traindir = os.path.join(args.data, 'train')
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
+    crop_size = 224 if args.dataset == 'imagenet' else 32
     if args.aug_plus:
         # MoCo v2's aug: similar to SimCLR https://arxiv.org/abs/2002.05709
         augmentation = [
-            transforms.RandomResizedCrop(224, scale=(0.2, 1.)),
+            transforms.RandomResizedCrop(crop_size, scale=(0.2, 1.)),
             transforms.RandomApply([
                 transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)  # not strengthened
             ], p=0.8),
@@ -236,7 +238,7 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         # MoCo v1's aug: the same as InstDisc https://arxiv.org/abs/1805.01978
         augmentation = [
-            transforms.RandomResizedCrop(224, scale=(0.2, 1.)),
+            transforms.RandomResizedCrop(crop_size, scale=(0.2, 1.)),
             transforms.RandomGrayscale(p=0.2),
             transforms.ColorJitter(0.4, 0.4, 0.4, 0.4),
             transforms.RandomHorizontalFlip(),
@@ -244,9 +246,7 @@ def main_worker(gpu, ngpus_per_node, args):
             normalize
         ]
 
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        moco.loader.TwoCropsTransform(transforms.Compose(augmentation)))
+    train_dataset = get_dataset(args.dataset, args.data, augmentation, train=True)
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -399,6 +399,27 @@ def accuracy(output, target, topk=(1,)):
             correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
+
+
+def get_dataset(dataset, augmentation, data_dir, train=True):
+    if dataset == 'imagenet':
+        if train:
+            data_dir = os.path.join(data_dir, 'train')
+        else:
+            data_dir = os.path.join(data_dir, 'val')
+        return datasets.ImageFolder(
+            data_dir,
+            moco.loader.TwoCropsTransform(transforms.Compose(augmentation)))
+    elif dataset == 'cifar10':
+        datasets.CIFAR10(
+            data_dir,
+            transform=moco.loader.TwoCropsTransform(transforms.Compose(augmentation)),
+            train=train)
+    elif dataset == 'cifar100':
+        datasets.CIFAR100(
+            data_dir,
+            transform=moco.loader.TwoCropsTransform(transforms.Compose(augmentation)),
+            train=train)
 
 
 if __name__ == '__main__':

@@ -8,7 +8,8 @@ class MoCo(nn.Module):
     Build a MoCo model with: a query encoder, a key encoder, and a queue
     https://arxiv.org/abs/1911.05722
     """
-    def __init__(self, base_encoder, dim=128, K=65536, m=0.999, T=0.07, mlp=False, flop_steps=256*10):
+    def __init__(self, base_encoder, dim=128, K=65536, m=0.999, T=0.07, mlp=False, flop_steps=256*10,
+                 dataset='imagenet'):
         """
         dim: feature dimension (default: 128)
         K: queue size; number of negative keys (default: 65536)
@@ -197,3 +198,14 @@ def concat_all_gather(tensor):
 
     output = torch.cat(tensors_gather, dim=0)
     return output
+
+
+@torch.no_grad()
+def adapt_architecture(encoder, dataset):
+    if dataset == 'imagenet':
+        return encoder
+    elif dataset in ['cifar10', 'cifar100']:
+        encoder.conv1 = nn.Conv2d(3, encoder.in_planes, kernel_size=3, stride=1, padding=1, bias=False)
+        encoder.maxpool = nn.Identity
+    else:
+        raise ValueError("Unexpected dataset")
