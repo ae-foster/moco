@@ -246,7 +246,9 @@ def main_worker(gpu, ngpus_per_node, args):
             normalize
         ]
 
-    train_dataset = get_dataset(args.dataset, augmentation, args.data, train=True)
+
+    train_dataset = get_dataset(args.dataset, moco.loader.TwoCropsTransform(transforms.Compose(augmentation)),
+                                args.data,train=True)
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -409,16 +411,16 @@ def get_dataset(dataset, augmentation, data_dir, train=True):
             data_dir = os.path.join(data_dir, 'val')
         return datasets.ImageFolder(
             data_dir,
-            moco.loader.TwoCropsTransform(transforms.Compose(augmentation)))
+            augmentation)
     elif dataset == 'cifar10':
-        return datasets.CIFAR10(
-            root=data_dir,
-            transform=moco.loader.TwoCropsTransform(transforms.Compose(augmentation)),
+        datasets.CIFAR10(
+            data_dir,
+            transform=augmentation,
             train=train)
     elif dataset == 'cifar100':
         return datasets.CIFAR100(
             data_dir,
-            transform=moco.loader.TwoCropsTransform(transforms.Compose(augmentation)),
+            transform=augmentation,
             train=train)
 
 

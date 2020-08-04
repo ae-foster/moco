@@ -148,12 +148,13 @@ def main_worker(gpu, args):
     cudnn.benchmark = True
 
     # Data loading code
+    crop_size_large = 256 if args.dataset == 'imagenet' else 32
     crop_size = 224 if args.dataset == 'imagenet' else 32
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
     train_dataset = get_dataset(args.dataset, transforms.Compose([
-            transforms.RandomResizedCrop(224),
+            transforms.RandomResizedCrop(crop_size),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             normalize,
@@ -165,8 +166,8 @@ def main_worker(gpu, args):
         num_workers=args.workers, pin_memory=True, sampler=train_sampler)
 
     val_dataset = get_dataset(args.dataset, transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
+            transforms.Resize(crop_size_large),
+            transforms.CenterCrop(crop_size),
             transforms.ToTensor(),
             normalize,
         ]), args.data, train=False)
