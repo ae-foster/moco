@@ -125,24 +125,9 @@ def main_worker(gpu, ngpus_per_node, args):
     global best_acc1
     args.gpu = gpu
 
-    # suppress printing if not master
-    if args.multiprocessing_distributed and args.gpu != 0:
-        def print_pass(*args):
-            pass
-        builtins.print = print_pass
-
     if args.gpu is not None:
         print("Use GPU: {} for training".format(args.gpu))
 
-    if args.distributed:
-        if args.dist_url == "env://" and args.rank == -1:
-            args.rank = int(os.environ["RANK"])
-        if args.multiprocessing_distributed:
-            # For multiprocessing distributed training, rank needs to be the
-            # global rank among all the processes
-            args.rank = args.rank * ngpus_per_node + gpu
-        dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                                world_size=args.world_size, rank=args.rank)
     # create model
     print("=> creating model '{}'".format(args.arch))
     model = models.__dict__[args.arch]()
@@ -179,8 +164,8 @@ def main_worker(gpu, ngpus_per_node, args):
         else:
             print("=> no checkpoint found at '{}'".format(args.pretrained))
 
-    model = model.cuda()
-    clf = clf.cuda()
+    model = model.cuda(args.gpu)
+    clf = clf.cuda(args.gpu)
 
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda(args.gpu)
@@ -256,7 +241,7 @@ def main_worker(gpu, ngpus_per_node, args):
     if bool(args.length == 0) ^ bool(args.percentage > 0.):
         raise ValueError("Must specify exactly one of length and percentage")
     if args.percentage > 0.:
-        args.length = int(len(train_dataset) * args.percentage() / 100)
+        args.length = int(len(train_dataset) * args.percentage / 100)
     X, y = encode(train_loader, model, args)
 
     # LBFGS training
@@ -310,8 +295,7 @@ def encode(train_loader, model, args):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        if args.gpu is not None:
-            images = images.cuda(args.gpu, non_blocking=True)
+        images = images.cuda(args.gpu, non_blocking=True)
         target = target.cuda(args.gpu, non_blocking=True)
 
         # compute output
@@ -333,6 +317,7 @@ def encode(train_loader, model, args):
     X = torch.cat(covariates, dim=0)
     X = X[:args.length, :]
     y = torch.cat(targets, dim=0)
+    y = y[:args.length]
 
     return X, y
 
@@ -355,10 +340,9 @@ def train(X, y, criterion, optimizer, clf, args):
 
     for i in range(n_steps):
         data_time.update(time.time() - end)
-        loss_stored, acc1, acc5 = None, None, None
+        store_l = [None, None, None]
 
         def closure():
-            global loss_stored, acc1, acc5
             optimizer.zero_grad()
             raw_scores = clf(X)
             loss = criterion(raw_scores, y)
@@ -368,6 +352,7 @@ def train(X, y, criterion, optimizer, clf, args):
             # measure accuracy and record loss
             acc1, acc5 = accuracy(raw_scores, y, topk=(1, 5))
             loss_stored = loss.item()
+            store_l[0], store_l[1], store_l[2] = loss_stored, acc1, acc5
 
             return loss
 
@@ -378,9 +363,9 @@ def train(X, y, criterion, optimizer, clf, args):
         end = time.time()
 
         # update counters
-        losses.update(loss_stored, 1)
-        top1.update(acc1[0], 1)
-        top5.update(acc5[0], 1)
+        losses.update(store_l[0], 1)
+        top1.update(store_l[1][0], 1)
+        top5.update(store_l[2][0], 1)
 
         if i % args.print_freq == 0:
             progress.display(i)
@@ -405,8 +390,7 @@ def validate(val_loader, model, clf, criterion, args):
     with torch.no_grad():
         end = time.time()
         for i, (images, target) in enumerate(val_loader):
-            if args.gpu is not None:
-                images = images.cuda(args.gpu, non_blocking=True)
+            images = images.cuda(args.gpu, non_blocking=True)
             target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
