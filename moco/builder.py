@@ -26,6 +26,8 @@ class MoCo(nn.Module):
         # num_classes is the output fc dimension
         self.encoder_q = base_encoder(num_classes=dim)
         self.encoder_k = base_encoder(num_classes=dim)
+        self.encoder_q = adapt_architecture(self.encoder_q, dataset)
+        self.encoder_k = adapt_architecture(self.encoder_k, dataset)
 
         if mlp:  # hack: brute-force replacement
             dim_mlp = self.encoder_q.fc.weight.shape[1]
@@ -125,7 +127,6 @@ class MoCo(nn.Module):
         Output:
             logits, targets
         """
-
         # compute key features
         with torch.no_grad():  # no gradient to keys
             # shuffle for making use of BN
@@ -205,7 +206,8 @@ def adapt_architecture(encoder, dataset):
     if dataset == 'imagenet':
         return encoder
     elif dataset in ['cifar10', 'cifar100']:
-        encoder.conv1 = nn.Conv2d(3, encoder.in_planes, kernel_size=3, stride=1, padding=1, bias=False)
-        encoder.maxpool = nn.Identity
+        encoder.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        encoder.maxpool = nn.Identity()
+        return encoder
     else:
         raise ValueError("Unexpected dataset")
