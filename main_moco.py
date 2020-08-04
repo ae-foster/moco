@@ -80,6 +80,7 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'N processes per node, which has N GPUs. This is the '
                          'fastest way to use PyTorch for either single node or '
                          'multi node data parallel training')
+parser.add_argument('--filename', default='checkpoint', type=str)
 
 # moco specific configs:
 parser.add_argument('--moco-dim', default=128, type=int,
@@ -279,7 +280,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 'arch': args.arch,
                 'state_dict': model.state_dict(),
                 'optimizer' : optimizer.state_dict(),
-            }, is_best=False, filename='checkpoint_{:04d}.pth.tar'.format(epoch))
+            }, is_best=False, filename='{}_{:04d}.pth.tar'.format(args.filename, epoch))
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
