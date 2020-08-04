@@ -54,25 +54,8 @@ parser.add_argument('--wd', '--weight-decay', default=0., type=float,
                     dest='weight_decay')
 parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
-parser.add_argument('--resume', default='', type=str, metavar='PATH',
-                    help='path to latest checkpoint (default: none)')
-parser.add_argument('--world-size', default=-1, type=int,
-                    help='number of nodes for distributed training')
-parser.add_argument('--rank', default=-1, type=int,
-                    help='node rank for distributed training')
-parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
-                    help='url used to set up distributed training')
-parser.add_argument('--dist-backend', default='nccl', type=str,
-                    help='distributed backend')
-parser.add_argument('--seed', default=None, type=int,
-                    help='seed for initializing training. ')
-parser.add_argument('--gpu', default=None, type=int,
+parser.add_argument('--gpu', default=0, type=int,
                     help='GPU id to use.')
-parser.add_argument('--multiprocessing-distributed', action='store_true',
-                    help='Use multi-processing distributed training to launch '
-                         'N processes per node, which has N GPUs. This is the '
-                         'fastest way to use PyTorch for either single node or '
-                         'multi node data parallel training')
 
 parser.add_argument('--pretrained', default='', type=str,
                     help='path to moco pretrained checkpoint')
@@ -99,29 +82,10 @@ def main():
                       'You may see unexpected behavior when restarting '
                       'from checkpoints.')
 
-    if args.gpu is not None:
-        warnings.warn('You have chosen a specific GPU. This will completely '
-                      'disable data parallelism.')
 
-    if args.dist_url == "env://" and args.world_size == -1:
-        args.world_size = int(os.environ["WORLD_SIZE"])
+    main_worker(args.gpu, args)
 
-    args.distributed = args.world_size > 1 or args.multiprocessing_distributed
-
-    ngpus_per_node = torch.cuda.device_count()
-    if args.multiprocessing_distributed:
-        # Since we have ngpus_per_node processes per node, the total world_size
-        # needs to be adjusted accordingly
-        args.world_size = ngpus_per_node * args.world_size
-        # Use torch.multiprocessing.spawn to launch distributed processes: the
-        # main_worker process function
-        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, args))
-    else:
-        # Simply call main_worker function
-        main_worker(args.gpu, ngpus_per_node, args)
-
-
-def main_worker(gpu, ngpus_per_node, args):
+def main_worker(gpu, args):
     global best_acc1
     args.gpu = gpu
 
@@ -175,28 +139,6 @@ def main_worker(gpu, ngpus_per_node, args):
     assert len(parameters) == 2  # clf.weight, clf.bias
     optimizer = torch.optim.LBFGS(parameters, lr=args.lr)
 
-    # optionally resume from a checkpoint
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
-            if args.gpu is None:
-                checkpoint = torch.load(args.resume)
-            else:
-                # Map model to be loaded to specified single gpu.
-                loc = 'cuda:{}'.format(args.gpu)
-                checkpoint = torch.load(args.resume, map_location=loc)
-            args.start_epoch = checkpoint['epoch']
-            best_acc1 = checkpoint['best_acc1']
-            if args.gpu is not None:
-                # best_acc1 may be from a checkpoint from a different GPU
-                best_acc1 = best_acc1.to(args.gpu)
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
-
     cudnn.benchmark = True
 
     # Data loading code
@@ -214,11 +156,7 @@ def main_worker(gpu, ngpus_per_node, args):
             normalize,
         ]))
 
-    if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-    else:
-        train_sampler = None
-
+    train_sampler = None
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler)
@@ -233,10 +171,6 @@ def main_worker(gpu, ngpus_per_node, args):
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
-    if args.distributed:
-        train_sampler.set_epoch(0)
-    adjust_learning_rate(optimizer, 0, args)
-
     # Encode data matrix
     if bool(args.length == 0) ^ bool(args.percentage > 0.):
         raise ValueError("Must specify exactly one of length and percentage")
@@ -248,23 +182,7 @@ def main_worker(gpu, ngpus_per_node, args):
     clf = train(X, y, criterion, optimizer, clf, args)
 
     # evaluate on validation set
-    acc1 = validate(val_loader, model, clf, criterion, args)
-
-    # # remember best acc@1 and save checkpoint
-    # is_best = acc1 > best_acc1
-    # best_acc1 = max(acc1, best_acc1)
-
-    # if not args.multiprocessing_distributed or (args.multiprocessing_distributed
-    #         and args.rank % ngpus_per_node == 0):
-    #     save_checkpoint({
-    #         'epoch': epoch + 1,
-    #         'arch': args.arch,
-    #         'state_dict': model.state_dict(),
-    #         'best_acc1': best_acc1,
-    #         'optimizer' : optimizer.state_dict(),
-    #     }, is_best)
-    #     if epoch == args.start_epoch:
-    #         sanity_check(model.state_dict(), args.pretrained)
+    validate(val_loader, model, clf, criterion, args)
 
 
 def encode(train_loader, model, args):
@@ -291,33 +209,34 @@ def encode(train_loader, model, args):
 
     length_so_far = 0
 
-    for i, (images, target) in enumerate(train_loader):
-        # measure data loading time
-        data_time.update(time.time() - end)
+    with torch.no_grad():
+        for i, (images, target) in enumerate(train_loader):
+            # measure data loading time
+            data_time.update(time.time() - end)
 
-        images = images.cuda(args.gpu, non_blocking=True)
-        target = target.cuda(args.gpu, non_blocking=True)
+            images = images.cuda(args.gpu, non_blocking=True)
+            target = target.cuda(args.gpu, non_blocking=True)
+    
+            # compute output
+            output = model(images)
+            covariates.append(output)
+            targets.append(target)
 
-        # compute output
-        output = model(images)
-        covariates.append(output)
-        targets.append(target)
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
 
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
+            if i % args.print_freq == 0:
+                progress.display(i)
 
-        if i % args.print_freq == 0:
-            progress.display(i)
+            length_so_far += output.shape[0]
+            if length_so_far >= args.length:
+                break
 
-        length_so_far += output.shape[0]
-        if length_so_far >= args.length:
-            break
-
-    X = torch.cat(covariates, dim=0)
-    X = X[:args.length, :]
-    y = torch.cat(targets, dim=0)
-    y = y[:args.length]
+        X = torch.cat(covariates, dim=0)
+        X = X[:args.length, :]
+        y = torch.cat(targets, dim=0)
+        y = y[:args.length]
 
     return X, y
 
@@ -486,15 +405,6 @@ class ProgressMeter(object):
         num_digits = len(str(num_batches // 1))
         fmt = '{:' + str(num_digits) + 'd}'
         return '[' + fmt + '/' + fmt.format(num_batches) + ']'
-
-
-def adjust_learning_rate(optimizer, epoch, args):
-    """Decay the learning rate based on schedule"""
-    lr = args.lr
-    for milestone in args.schedule:
-        lr *= 0.1 if epoch >= milestone else 1.
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
 
 
 def accuracy(output, target, topk=(1,)):
