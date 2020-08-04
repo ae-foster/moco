@@ -136,10 +136,10 @@ class MoCo(nn.Module):
             # undo shuffle
             k = self._batch_unshuffle_ddp(k, idx_unshuffle)
 
+        if self.flip:
+        
             # dequeue and enqueue
             self._dequeue_and_enqueue(k)
-
-        if self.flip:
 
             if (self.queue_ptr == 0).all():
                 # Change mode to flop
@@ -171,6 +171,8 @@ class MoCo(nn.Module):
 
         # labels: positive key indicators
         labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
+
+        self._dequeue_and_enqueue(k)
 
         self.flop_step += 1
         if self.flop_step >= self.flop_steps:
