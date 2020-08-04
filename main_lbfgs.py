@@ -56,6 +56,7 @@ parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
 parser.add_argument('--gpu', default=0, type=int,
                     help='GPU id to use.')
+parser.add_argument('--seed', default=None, type=int)
 
 parser.add_argument('--pretrained', default='', type=str,
                     help='path to moco pretrained checkpoint')
