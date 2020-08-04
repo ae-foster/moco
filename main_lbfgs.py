@@ -7,6 +7,7 @@ import random
 import shutil
 import time
 import warnings
+from math import ceil
 
 import torch
 import torch.nn as nn
@@ -44,9 +45,7 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                     help='mini-batch size (default: 256), this is the total '
                          'batch size of all GPUs on the current node when '
                          'using Data Parallel or Distributed Data Parallel')
-parser.add_argument('-t', '--total-trainset-size', type=int, default=50000,
-                    help='Total training set size')
-parser.add_argument('--lr', '--learning-rate', default=30., type=float,
+parser.add_argument('--lr', '--learning-rate', default=1., type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
 parser.add_argument('--schedule', default=[60, 80], nargs='*', type=int,
                     help='learning rate schedule (when to drop lr by a ratio)')
@@ -81,6 +80,12 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
 
 parser.add_argument('--pretrained', default='', type=str,
                     help='path to moco pretrained checkpoint')
+
+# LBFGS specific
+parser.add_argument('--length', default=0, type=int,
+                    help='length of training set to use')
+parser.add_argument('--percentage', default=0., type=float,
+                    help='percentage if training set to use')
 
 best_acc1 = 0
 
@@ -146,13 +151,13 @@ def main_worker(gpu, ngpus_per_node, args):
     print("=> creating model '{}'".format(args.arch))
     model = models.__dict__[args.arch]()
 
-    # freeze all layers but the last fc
+    # the fc layer is now identity, returning the representation of that object
+    clf_shape = model.fc.in_features, model.fc.out_features
+    model.fc = nn.Identity()
+    # freeze all layers
     for name, param in model.named_parameters():
-        if name not in ['fc.weight', 'fc.bias']:
-            param.requires_grad = False
-    # init the fc layer
-    model.fc.weight.data.normal_(mean=0.0, std=0.01)
-    model.fc.bias.data.zero_()
+        param.requires_grad = False
+    clf = nn.Linear(*clf_shape)
 
     # load from pre-trained, before DistributedDataParallel constructor
     if args.pretrained:
@@ -172,7 +177,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
             args.start_epoch = 0
             msg = model.load_state_dict(state_dict, strict=False)
-            assert set(msg.missing_keys) == {"fc.weight", "fc.bias"}
+            # assert set(msg.missing_keys) == {"fc.weight", "fc.bias"}
 
             print("=> loaded pre-trained model '{}'".format(args.pretrained))
         else:
@@ -206,17 +211,15 @@ def main_worker(gpu, ngpus_per_node, args):
             model.cuda()
         else:
             model = torch.nn.DataParallel(model).cuda()
+    clf = clf.cuda()
 
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda(args.gpu)
 
     # optimize only the linear classifier
-    parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
-    assert len(parameters) == 2  # fc.weight, fc.bias
-    # optimizer = torch.optim.SGD(parameters, args.lr,
-    #                             momentum=args.momentum,
-    #                             weight_decay=args.weight_decay)
-    optimizer = torch.optim.LBFGS(parameters)
+    parameters = list(clf.parameters())
+    assert len(parameters) == 2  # clf.weight, clf.bias
+    optimizer = torch.optim.LBFGS(parameters, lr=args.lr)
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -280,44 +283,47 @@ def main_worker(gpu, ngpus_per_node, args):
         validate(val_loader, model, criterion, args)
         return
 
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            train_sampler.set_epoch(epoch)
-        adjust_learning_rate(optimizer, epoch, args)
+    if args.distributed:
+        train_sampler.set_epoch(0)
+    adjust_learning_rate(optimizer, 0, args)
 
-        # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args)
+    # Encode data matrix
+    if bool(args.length == 0) ^ bool(args.percentage > 0.):
+        raise ValueError("Must specify exactly one of length and percentage")
+    if args.percentage > 0.:
+        args.length = int(len(train_dataset) * args.percentage() / 100)
+    X, y = encode(train_loader, model, args)
 
-        # evaluate on validation set
-        acc1 = validate(val_loader, model, criterion, args)
+    # LBFGS training
+    clf = train(X, y, criterion, optimizer, clf, args)
 
-        # remember best acc@1 and save checkpoint
-        is_best = acc1 > best_acc1
-        best_acc1 = max(acc1, best_acc1)
+    # evaluate on validation set
+    acc1 = validate(val_loader, model, clf, criterion, args)
 
-        if not args.multiprocessing_distributed or (args.multiprocessing_distributed
-                and args.rank % ngpus_per_node == 0):
-            save_checkpoint({
-                'epoch': epoch + 1,
-                'arch': args.arch,
-                'state_dict': model.state_dict(),
-                'best_acc1': best_acc1,
-                'optimizer' : optimizer.state_dict(),
-            }, is_best)
-            if epoch == args.start_epoch:
-                sanity_check(model.state_dict(), args.pretrained)
+    # # remember best acc@1 and save checkpoint
+    # is_best = acc1 > best_acc1
+    # best_acc1 = max(acc1, best_acc1)
+
+    # if not args.multiprocessing_distributed or (args.multiprocessing_distributed
+    #         and args.rank % ngpus_per_node == 0):
+    #     save_checkpoint({
+    #         'epoch': epoch + 1,
+    #         'arch': args.arch,
+    #         'state_dict': model.state_dict(),
+    #         'best_acc1': best_acc1,
+    #         'optimizer' : optimizer.state_dict(),
+    #     }, is_best)
+    #     if epoch == args.start_epoch:
+    #         sanity_check(model.state_dict(), args.pretrained)
 
 
-def train(train_loader, model, criterion, optimizer, epoch, args):
+def encode(train_loader, model, args):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
-    losses = AverageMeter('Loss', ':.4e')
-    top1 = AverageMeter('Acc@1', ':6.2f')
-    top5 = AverageMeter('Acc@5', ':6.2f')
     progress = ProgressMeter(
-        len(train_loader),
-        [batch_time, data_time, losses, top1, top5],
-        prefix="Epoch: [{}]".format(epoch))
+        ceil(args.length / args.batch_size),
+        [batch_time, data_time],
+        prefix="Encoding")
 
     """
     Switch to eval mode:
@@ -329,6 +335,12 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     model.eval()
 
     end = time.time()
+
+    covariates = []
+    targets = []
+
+    length_so_far = 0
+
     for i, (images, target) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
@@ -339,18 +351,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         # compute output
         output = model(images)
-        loss = criterion(output, target)
-
-        # measure accuracy and record loss
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
-        losses.update(loss.item(), images.size(0))
-        top1.update(acc1[0], images.size(0))
-        top5.update(acc5[0], images.size(0))
-
-        # compute gradient and do SGD step
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        covariates.append(output)
+        targets.append(target)
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -359,8 +361,69 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         if i % args.print_freq == 0:
             progress.display(i)
 
+        length_so_far += output.shape[0]
+        if length_so_far >= args.length:
+            break
 
-def validate(val_loader, model, criterion, args):
+    X = torch.cat(covariates, dim=0)
+    X = X[:args.length, :]
+    y = torch.cat(targets, dim=0)
+
+    return X, y
+
+
+def train(X, y, criterion, optimizer, clf, args):
+    n_steps = 500
+    batch_time = AverageMeter('Time', ':6.3f')
+    data_time = AverageMeter('Data', ':6.3f')
+    losses = AverageMeter('Loss', ':.4e')
+    top1 = AverageMeter('Acc@1', ':6.2f')
+    top5 = AverageMeter('Acc@5', ':6.2f')
+    progress = ProgressMeter(
+        n_steps,
+        [batch_time, data_time, losses, top1, top5],
+        prefix="Training")
+
+    clf.train()
+
+    end = time.time()
+
+    for i in range(n_steps):
+        data_time.update(time.time() - end)
+        loss_stored, acc1, acc5 = None, None, None
+
+        def closure():
+            global loss_stored, acc1, acc5
+            optimizer.zero_grad()
+            raw_scores = clf(X)
+            loss = criterion(raw_scores, y)
+            loss += args.weight_decay * clf.weight.pow(2).sum()
+            loss.backward()
+
+            # measure accuracy and record loss
+            acc1, acc5 = accuracy(raw_scores, y, topk=(1, 5))
+            loss_stored = loss.item()
+
+            return loss
+
+        optimizer.step(closure)
+
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+        # update counters
+        losses.update(loss_stored, 1)
+        top1.update(acc1[0], 1)
+        top5.update(acc5[0], 1)
+
+        if i % args.print_freq == 0:
+            progress.display(i)
+
+    return clf
+
+
+def validate(val_loader, model, clf, criterion, args):
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
@@ -372,6 +435,7 @@ def validate(val_loader, model, criterion, args):
 
     # switch to evaluate mode
     model.eval()
+    clf.eval()
 
     with torch.no_grad():
         end = time.time()
@@ -381,7 +445,7 @@ def validate(val_loader, model, criterion, args):
             target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
-            output = model(images)
+            output = clf(model(images))
             loss = criterion(output, target)
 
             # measure accuracy and record loss
