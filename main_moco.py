@@ -103,6 +103,8 @@ parser.add_argument('--aug-plus', action='store_true',
                     help='use moco v2 data augmentation')
 parser.add_argument('--cos', action='store_true',
                     help='use cosine lr schedule')
+parser.add_argument('--lars', action='store_true',
+                    help='Use LARS optimizer on top of SGD')
 
 
 def main():
@@ -203,7 +205,8 @@ def main_worker(gpu, ngpus_per_node, args):
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
-    optimizer = LARS(optimizer)
+    if args.lars:
+        optimizer = LARS(optimizer)
 
     # optionally resume from a checkpoint
     if args.resume:
