@@ -88,6 +88,8 @@ parser.add_argument('--moco-m', default=0.999, type=float,
                     help='moco momentum of updating key encoder (default: 0.999)')
 parser.add_argument('--moco-t', default=0.07, type=float,
                     help='softmax temperature (default: 0.07)')
+parser.add_argument('--flop-len', default=655360, type=int,
+                    help='number of examples to see per flop')
 
 # options for moco v2
 parser.add_argument('--mlp', action='store_true',
@@ -156,9 +158,10 @@ def main_worker(gpu, ngpus_per_node, args):
                                 world_size=args.world_size, rank=args.rank)
     # create model
     print("=> creating model '{}'".format(args.arch))
+    flop_steps = args.flop_len // args.batch_size
     model = moco.builder.MoCo(
         models.__dict__[args.arch],
-        args.moco_dim, args.moco_k, args.moco_m, args.moco_t, args.mlp)
+        args.moco_dim, args.moco_k, args.moco_m, args.moco_t, args.mlp, flop_steps)
     print(model)
 
     if args.distributed:
