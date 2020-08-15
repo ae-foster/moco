@@ -21,6 +21,7 @@ import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
+from torchlars import LARS
 
 import moco.loader
 import moco.builder
@@ -59,6 +60,10 @@ parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     dest='weight_decay')
 parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
+parser.add_argument('--save-freq', default=10, type=int,
+                    help='how often to save a checkpoint')
+parser.add_argument('--filename', default='checkpoint', type=str,
+                    help='prefix for naming output files')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--world-size', default=-1, type=int,
@@ -198,6 +203,7 @@ def main_worker(gpu, ngpus_per_node, args):
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
+    optimizer = LARS(optimizer)
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -269,13 +275,13 @@ def main_worker(gpu, ngpus_per_node, args):
         train(train_loader, model, criterion, optimizer, epoch, args)
 
         if (not args.multiprocessing_distributed or (args.multiprocessing_distributed
-                and args.rank % ngpus_per_node == 0)) and epoch % 10 == 9:
+                and args.rank % ngpus_per_node == 0)) and epoch % args.save_freq == (save_freq - 1):
             save_checkpoint({
                 'epoch': epoch + 1,
                 'arch': args.arch,
                 'state_dict': model.state_dict(),
                 'optimizer' : optimizer.state_dict(),
-            }, is_best=False, filename='checkpoint_{:04d}.pth.tar'.format(epoch))
+            }, is_best=False, filename='{}_{:04d}.pth.tar'.format(args.filename, epoch))
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
