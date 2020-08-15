@@ -275,7 +275,7 @@ def main_worker(gpu, ngpus_per_node, args):
         train(train_loader, model, criterion, optimizer, epoch, args)
 
         if (not args.multiprocessing_distributed or (args.multiprocessing_distributed
-                and args.rank % ngpus_per_node == 0)) and epoch % args.save_freq == (save_freq - 1):
+                and args.rank % ngpus_per_node == 0)) and epoch % args.save_freq == (args.save_freq - 1):
             save_checkpoint({
                 'epoch': epoch + 1,
                 'arch': args.arch,
