@@ -34,8 +34,8 @@ class MoCo(nn.Module):
         self._update_key_encoder()
 
         # create the queue
-        self.register_buffer("queue", torch.randn(dim, K))
-        self.queue = nn.functional.normalize(self.queue, dim=0)
+        self.register_buffer("queue", torch.randn(K, dim))
+        self.queue = nn.functional.normalize(self.queue, dim=1)
 
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
 
@@ -64,7 +64,7 @@ class MoCo(nn.Module):
         assert self.K % batch_size == 0  # for simplicity
 
         # replace the keys at ptr (dequeue and enqueue)
-        self.queue[:, ptr:ptr + batch_size] = keys.T
+        self.queue[ptr:ptr + batch_size, :] = keys
         ptr = (ptr + batch_size) % self.K  # move pointer
 
         self.queue_ptr[0] = ptr
@@ -116,7 +116,7 @@ class MoCo(nn.Module):
 
         return x_gather[idx_this]
 
-    def forward(self, im_q, im_k):
+    def forward(self, im_1, im_2):
         """
         Input:
             im_q: a batch of query images
@@ -128,18 +128,22 @@ class MoCo(nn.Module):
         # compute key features
         with torch.no_grad():  # no gradient to keys
             # shuffle for making use of BN
-            im_k, idx_unshuffle = self._batch_shuffle_ddp(im_k)
+            im_k1, idx_unshuffle1 = self._batch_shuffle_ddp(im_1)
+            im_k2, idx_unshuffle2 = self._batch_shuffle_ddp(im_2)
 
-            k = self.encoder_k(im_k)  # keys: NxC
-            k = nn.functional.normalize(k, dim=1)
+            k1 = self.encoder_k(im_k1)  # keys: NxC
+            k1 = nn.functional.normalize(k1, dim=1)
+            k2 = self.encoder_k(im_k2)
+            k2 = nn.functional.normalize(k2, dim=1)
 
             # undo shuffle
-            k = self._batch_unshuffle_ddp(k, idx_unshuffle)
+            k1 = self._batch_unshuffle_ddp(k1, idx_unshuffle1)
+            k2 = self._batch_unshuffle_ddp(k2, idx_unshuffle2)
 
         if self.flip:
         
             # dequeue and enqueue
-            self._dequeue_and_enqueue(k)
+            self._dequeue_and_enqueue(k1)
 
             if (self.queue_ptr == 0).all():
                 # Change mode to flop
@@ -148,31 +152,30 @@ class MoCo(nn.Module):
 
             return
 
-        #print('flop')
 
         # compute query features
-        q = self.encoder_q(im_q)  # queries: NxC
-        q = nn.functional.normalize(q, dim=1)
+        q1 = self.encoder_q(im_1)  # queries: NxC
+        q1 = nn.functional.normalize(q1, dim=1)
+        q2 = self.encoder_q(im_2)
+        q2 = nn.functional.normalize(q2, dim=1)
 
         #print('q', q, 'k', k)
 
         # compute logits
         # Einstein sum is more intuitive
-        # positive logits: Nx1
-        l_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1)
-        # negative logits: NxK
-        l_neg = torch.einsum('nc,ck->nk', [q, self.queue.clone().detach()])
+        logits1 = torch.einsum('nc,mc->nm', [q1, torch.cat([k2, self.queue.clone().detach()], dim=0)])
+        logits2 = torch.einsum('nc,mc->nm', [q2, torch.cat([k1, self.queue.clone().detach()], dim=0)])
 
         # logits: Nx(1+K)
-        logits = torch.cat([l_pos, l_neg], dim=1)
+        logits = torch.cat([logits1, logits2], dim=0)
 
         # apply temperature
         logits /= self.T
 
         # labels: positive key indicators
-        labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
+        labels = torch.arange(logits1.shape[0], dtype=torch.long).repeat(2).cuda()
 
-        self._dequeue_and_enqueue(k)
+        self._dequeue_and_enqueue(k1)
 
         self.flop_step += 1
         if self.flop_step >= self.flop_steps:

@@ -265,8 +265,8 @@ def main_worker(gpu, ngpus_per_node, args):
         # train for one epoch
         train(train_loader, model, criterion, optimizer, epoch, args)
 
-        if not args.multiprocessing_distributed or (args.multiprocessing_distributed
-                and args.rank % ngpus_per_node == 0):
+        if (not args.multiprocessing_distributed or (args.multiprocessing_distributed
+                and args.rank % ngpus_per_node == 0)) and epoch % 10 == 9:
             save_checkpoint({
                 'epoch': epoch + 1,
                 'arch': args.arch,
@@ -300,9 +300,9 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         # compute output
         if model.module.flip:
-            model(im_q=images[0], im_k=images[1])
+            model(im_1=images[0], im_2=images[1])
         else:
-            output, target = model(im_q=images[0], im_k=images[1])
+            output, target = model(im_1=images[0], im_2=images[1])
             loss = criterion(output, target)
 
             # acc1/acc5 are (K+1)-way contrast classifier accuracy
