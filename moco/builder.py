@@ -155,13 +155,13 @@ class MoCo(nn.Module):
 
         # compute logits
         # Einstein sum is more intuitive
-        logits2 = torch.einsum('nc,mc->nm', [q2, torch.cat([k1, self.queue.clone().detach()], dim=0)])
+        logits = torch.einsum('nc,mc->nm', [q2, torch.cat([k1, self.queue.clone().detach()], dim=0)])
 
         # apply temperature
         logits /= self.T
 
         # labels: positive key indicators
-        labels = torch.arange(logits1.shape[0], dtype=torch.long).cuda()
+        labels = torch.arange(logits.shape[0], dtype=torch.long).cuda()
 
         self._dequeue_and_enqueue(k1)
 
