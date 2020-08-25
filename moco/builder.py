@@ -129,16 +129,12 @@ class MoCo(nn.Module):
         with torch.no_grad():  # no gradient to keys
             # shuffle for making use of BN
             im_k1, idx_unshuffle1 = self._batch_shuffle_ddp(im_1)
-            im_k2, idx_unshuffle2 = self._batch_shuffle_ddp(im_2)
 
             k1 = self.encoder_k(im_k1)  # keys: NxC
             k1 = nn.functional.normalize(k1, dim=1)
-            k2 = self.encoder_k(im_k2)
-            k2 = nn.functional.normalize(k2, dim=1)
 
             # undo shuffle
             k1 = self._batch_unshuffle_ddp(k1, idx_unshuffle1)
-            k2 = self._batch_unshuffle_ddp(k2, idx_unshuffle2)
 
         if self.flip:
         
@@ -154,26 +150,18 @@ class MoCo(nn.Module):
 
 
         # compute query features
-        q1 = self.encoder_q(im_1)  # queries: NxC
-        q1 = nn.functional.normalize(q1, dim=1)
         q2 = self.encoder_q(im_2)
         q2 = nn.functional.normalize(q2, dim=1)
 
-        #print('q', q, 'k', k)
-
         # compute logits
         # Einstein sum is more intuitive
-        logits1 = torch.einsum('nc,mc->nm', [q1, torch.cat([k2, self.queue.clone().detach()], dim=0)])
         logits2 = torch.einsum('nc,mc->nm', [q2, torch.cat([k1, self.queue.clone().detach()], dim=0)])
-
-        # logits: Nx(1+K)
-        logits = torch.cat([logits1, logits2], dim=0)
 
         # apply temperature
         logits /= self.T
 
         # labels: positive key indicators
-        labels = torch.arange(logits1.shape[0], dtype=torch.long).repeat(2).cuda()
+        labels = torch.arange(logits1.shape[0], dtype=torch.long).cuda()
 
         self._dequeue_and_enqueue(k1)
 
