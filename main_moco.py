@@ -258,7 +258,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     train_dataset = datasets.CIFAR100(
         args.data,
-        transform=augmentation,
+        transform=moco.loader.TwoCropsTransform(transforms.Compose(augmentation)),
         train=True)
 
     if args.distributed:
