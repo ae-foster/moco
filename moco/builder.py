@@ -25,6 +25,8 @@ class MoCo(nn.Module):
         # num_classes is the output fc dimension
         self.encoder_q = base_encoder(num_classes=dim)
         self.encoder_k = base_encoder(num_classes=dim)
+        self.encoder_q = adapt_architecture(self.encoder_q)
+        self.encoder_k = adapt_architecture(self.encoder_k)
 
         if mlp:  # hack: brute-force replacement
             dim_mlp = self.encoder_q.fc.weight.shape[1]
@@ -188,3 +190,10 @@ def concat_all_gather(tensor):
 
     output = torch.cat(tensors_gather, dim=0)
     return output
+
+
+@torch.no_grad()
+def adapt_architecture(encoder):
+    encoder.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+    encoder.maxpool = nn.Identity()
+    return encoder

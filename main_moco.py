@@ -30,7 +30,7 @@ model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
 
-parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
+parser = argparse.ArgumentParser(description='PyTorch CIFAR-100 Training')
 parser.add_argument('data', metavar='DIR',
                     help='path to dataset')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet50',
@@ -229,18 +229,18 @@ def main_worker(gpu, ngpus_per_node, args):
     cudnn.benchmark = True
 
     # Data loading code
-    traindir = os.path.join(args.data, 'train')
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+    # traindir = os.path.join(args.data, 'train')
+    normalize = transforms.Normalize(mean=[0.5071, 0.4865, 0.4409],
+                                     std=[0.2009, 0.1984, 0.2023])
     if args.aug_plus:
         # MoCo v2's aug: similar to SimCLR https://arxiv.org/abs/2002.05709
         augmentation = [
-            transforms.RandomResizedCrop(224, scale=(0.2, 1.)),
+            transforms.RandomResizedCrop(32, scale=(0.2, 1.)),
             transforms.RandomApply([
                 transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)  # not strengthened
             ], p=0.8),
             transforms.RandomGrayscale(p=0.2),
-            transforms.RandomApply([moco.loader.GaussianBlur([.1, 2.])], p=0.5),
+            # transforms.RandomApply([moco.loader.GaussianBlur([.1, 2.])], p=0.5),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             normalize
@@ -256,9 +256,10 @@ def main_worker(gpu, ngpus_per_node, args):
             normalize
         ]
 
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        moco.loader.TwoCropsTransform(transforms.Compose(augmentation)))
+    train_dataset = datasets.CIFAR100(
+        args.data,
+        transform=augmentation,
+        train=True)
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
