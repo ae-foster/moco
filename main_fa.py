@@ -6,6 +6,7 @@ import os
 import random
 import time
 import warnings
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -170,7 +171,6 @@ def main_worker(gpu, ngpus_per_node, args):
 
             args.start_epoch = 0
             msg = model.load_state_dict(state_dict, strict=False)
-            assert set(msg.missing_keys) == {"fc.weight", "fc.bias"}
 
             print("=> loaded pre-trained model '{}'".format(args.pretrained))
         else:
@@ -210,10 +210,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # optimize only the linear classifier
     parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
-    assert len(parameters) == 2  # fc.weight, fc.bias
-    optimizer = torch.optim.SGD(parameters, args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
+    assert len(parameters) == 0  # fc.weight, fc.bias
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -299,7 +296,7 @@ def train(train_loader, model, epoch, args):
 
     reprs, targets = [], []
 
-    for i, (images, target) in enumerate(train_loader):
+    for (images, target) in tqdm(train_loader):
         # measure data loading time
 
         if args.gpu is not None:
